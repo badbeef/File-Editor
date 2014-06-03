@@ -1,7 +1,7 @@
-Binary-File-Editor
-==================
+File-Editor
+===========
 
-A unix based interactive binary file editor inspired by pctools in the 80s. Each page is shown with binary and its ASCII side-by-side.
+A unix based interactive binary file editor inspired by pctools in the 80s. Each page is shown with binary and its ASCII side-by-side. Optimized for 80-col terminal. 80x24 or larger terminal space is required.
 
 
 
@@ -23,4 +23,6 @@ A unix based interactive binary file editor inspired by pctools in the 80s. Each
     1F0 - 5F 5F 75 6E 77 69 6E 64 5F 69 6E 66 6F 00 00 00 : __unwind_info
 
 
-You can edit the file using hex mode or text mode. 
+You can flip through the file block-by-block or load selective block. You can edit the file using hex mode or text mode. Changes will be highlighted on screen. And after changes, you can write the block back to the file. 
+
+Building it is dead easy. Just run make or refer to the two lines Makefile. Only curses library is used.
