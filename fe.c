@@ -29,10 +29,12 @@ SOFTWARE.
 #include <fcntl.h>
 #include <string.h>
 
-#define PACKET 256
+#define BLOCK_SIZE 256
+#define KEY_SIZE 40
 #define NEXT 1
 #define PREV 2
 #define RAND 3
+#define SILENT_NEXT 4
 #define TOPOFFILE -1
 #define BOTOFFILE -2
 #define INVALIDPOS -3
@@ -43,10 +45,15 @@ SOFTWARE.
 #define TY 3
 #define ENTER 10
 
-unsigned char buf[PACKET];
+/*
+ * This is a File-Editor file that I wrote to have better control of what to 
+ * change in a (mostly binary) file. It was written long time ago when my C skill
+ * isn't very good. so please forgive the abuse of global variables.  :)
+ */
+unsigned char buf[BLOCK_SIZE + KEY_SIZE];
 char hex[16] = "0123456789ABCDEF";
-int maxY, maxX, hy, hx, ty, tx, fd, en = 0, endf;
-long pos, length;
+int maxY, maxX, hy, hx, ty, tx, fd, en = 0;
+long pos, length;   // displayed position(in bytes) and total length of current file
 bool ReadOnly = FALSE, Changed = FALSE;
 
 void error(char *msg)
@@ -103,23 +110,75 @@ bool AbortChanges()
     return TRUE;
 }
 
+void BlockPrint(int bold_pos, int bold_len) 
+{
+  int i, j, endf;
+  int standout = 0;
+  endf = length - pos;
+  if (endf > BLOCK_SIZE) {
+    endf = BLOCK_SIZE;
+  }
+  mvprintw(0, 70, "%4d", endf);
+  error("");
+  attrset(A_BOLD);
+  move(1, 19);
+  clrtoeol();
+  mvprintw(1, 18, "%d", pos / 256);
+  attrset(A_NORMAL);
+  for (i = endf; i < BLOCK_SIZE; i++)
+    buf[i] = 0;
+  move(SY, 0);
+  for (i = 0; i < 16; i++)
+  {
+    printw("%7X - ", pos+i*16);
+    for (j = 0; j < 16; j++) {
+      if (i * 16 + j >= bold_pos && i * 16 + j < bold_pos + bold_len) {
+	attrset(A_BOLD);
+	standout = 1;
+      }
+      printw("%c%c ", hex[buf[i*16 + j] / 16], hex[buf[i*16 + j] % 16]);
+      if (standout) {
+	attrset(A_NORMAL);
+	standout = 1;
+      }
+    }
+    printw(": ");
+    for (j = 0; j < 16; j++)
+    {
+      char chr;
+      chr = buf[i*16 + j];
+      if (i * 16 + j >= bold_pos && i * 16 + j < bold_pos + bold_len) {
+	attrset(A_BOLD);
+	standout = 1;
+      }
+      putt(chr);
+      if (standout) {
+	attrset(A_NORMAL);
+	standout = 1;
+      }
+    }
+    addch('\n');
+  }
+  refresh();
+  Changed = FALSE;
+}
+
 int BlockRead(int MODE)
 {
-  int i, j;
   if (MODE == PREV)
-    if(lseek(fd, pos -= PACKET, 0) == -1L)
+    if(lseek(fd, pos -= BLOCK_SIZE, 0) == -1L)
     {
       error("Begin of file");
-      pos += PACKET;
+      pos += BLOCK_SIZE;
       return TOPOFFILE;
     }
-  if (MODE == NEXT)
+  if (MODE == NEXT || MODE == SILENT_NEXT)
   {
-    pos += PACKET;
+    pos += BLOCK_SIZE;
     if (pos >= length)
     {
       error("End of file");
-      pos -= PACKET;
+      pos -= BLOCK_SIZE;
       return BOTOFFILE;
     }
     else 
@@ -133,41 +192,25 @@ int BlockRead(int MODE)
     }
     else
       lseek(fd, pos, 0);
-  endf = read(fd, buf, sizeof(buf));
-  mvprintw(0, 70, "%4d", endf);
-  error("");
-  attrset(A_BOLD);
-  move(1, 19);
-  clrtoeol();
-  mvprintw(1, 18, "%d", pos / 256);
-  attrset(A_NORMAL);
-  for (i = endf; i < PACKET; i++)
-    buf[i] = 0;
-  move(SY, 0);
-  for (i = 0; i < 16; i++)
-  {
-    printw("%7X - ", pos+i*16);
-    for (j = 0; j < 16; j++)
-      printw("%c%c ", hex[buf[i*16 + j] / 16], hex[buf[i*16 + j] % 16]);
-    printw(": ");
-    for (j = 0; j < 16; j++)
-    {
-      char chr;
-      chr = buf[i*16 + j];
-      putt(chr);
-    }
-    addch('\n');
+  if (read(fd, buf, BLOCK_SIZE) <= 0) {
+    error("Read Error");
+    return INVALIDPOS;
   }
-  refresh();
-  Changed = FALSE;
+  if (MODE != SILENT_NEXT) {
+    BlockPrint(0, 0);
+  }
   return 0;
 }
 
 BlockWrite()
 {
-  int a, b;
+  int a, b, len;
   a = lseek(fd, pos, 0);
-  b = write(fd, buf, endf);
+  len = length - pos;
+  if (len > BLOCK_SIZE) {
+    len = BLOCK_SIZE;
+  }
+  b = write(fd, buf, len);
   move(LINES - 1, 0);
   clrtobot();
   mvprintw(LINES - 1, 10, "Block Written");
@@ -272,6 +315,114 @@ EditText()
   clrtobot();
 }
 
+void findData()
+{
+  int c, i, len, digit, value;
+  unsigned char key[KEY_SIZE + 1];
+  int offset;
+  int buf_len;
+  unsigned char *found;
+
+  move(20, 0);
+  clrtobot();
+  mvprintw(21, 0, "Find h)ex or t)ext : ");
+  refresh();
+  c = getch();
+  move(22, 0);
+  clrtobot();
+  if (c != 'h' && c != 't') {
+    return;
+  }
+  move(20, 0);
+  mvprintw(22, 0, "Enter %s string : ", c == 'h' ? "hex" : "text");
+  echo();
+  getnstr(key, KEY_SIZE);
+  key[KEY_SIZE] = 0;
+  noecho();
+  if (c == 'h') {
+    /* convert key to hex */
+    digit = 0;
+    len = 0;
+    value = 0;
+    for (i = 0; i <= KEY_SIZE; i++) {
+      switch(key[i]) {
+      case '\0':
+	if (digit) {
+	  error("incomplete hex");
+	  return;
+	}
+	goto done;
+      case ' ' :
+	if (digit) {
+	  error("incomplete hex");
+	  return;
+	}
+	digit = 0;
+	continue;
+      default:
+	if (key[i] >= '0' && key[i] <= '9') {
+	  value = key[i] - '0';
+	} else if (key[i] >= 'a' && key[i] <= 'f') {
+	  value = key[i] - 'a' + 10;
+	} else if (key[i] >= 'A' && key[i] <= 'F') {
+	  value = key[i] - 'A' + 10;
+	} else {
+	  error("invalid hex string");
+	  return;
+	}
+	if (digit == 0) {
+	  key[len] = value;
+	  digit = 1;
+	} else {
+	  key[len] = key[len] * 16 + value;
+	  digit = 0;
+	  len++;
+	}
+      }
+    }
+  } else {
+    len = strlen(key);
+  }
+done:
+  /* start with the current block */
+  do {
+    if (length - pos >= BLOCK_SIZE + KEY_SIZE - 1) {
+      /* middle of file */
+      read(fd, &buf[BLOCK_SIZE], KEY_SIZE - 1);
+      buf_len = BLOCK_SIZE + KEY_SIZE - 1;
+    } else if (length - pos > BLOCK_SIZE) {
+      /* 2nd last block with not enough space for extra full key */
+      read(fd, &buf[BLOCK_SIZE], length - pos - BLOCK_SIZE);
+      buf_len = length - pos;
+    } else {
+      /* last block, with 1 block or less data left */
+      buf_len = length - pos;
+    }
+    found = memmem(buf, buf_len, key, len);
+    if (found) {
+      offset = found - buf;
+      BlockPrint(offset, len);
+      error("Found at offset");
+      printf(" %d", offset);
+      return;
+    }
+    
+    /* update the block id on screen */
+    if (pos % 256000 == 0) {
+      /* refresh too often brings down performance */
+      attrset(A_BOLD);
+      move(1, 19);
+      clrtoeol();
+      mvprintw(1, 18, "%d", pos / 256);
+      attrset(A_NORMAL);
+      refresh();
+    }
+  } while (BlockRead(SILENT_NEXT) == 0);
+  error("Not found");
+  BlockPrint(0, 0);
+  return;
+}
+
 void LoadBlock()
 {
   char sector[20];
@@ -281,10 +432,10 @@ void LoadBlock()
   mvprintw(22, 0, "Block (256 bytes) number to read : ");
   refresh();
   echo();
-  getstr(sector);
+  getnstr(sector, sizeof(sector) - 1);
   noecho();
   oldpos = pos;
-  pos = atoi(sector) * PACKET;
+  pos = atoi(sector) * BLOCK_SIZE;
   if (BlockRead(RAND) != 0)
     pos = oldpos;
   move(22, 0);
@@ -298,7 +449,7 @@ void BlockEdit()
   do
   {
     move(20, 0);
-    printw("h) Edit Hex, t) Edit Text, q) Quit\n");
+    printw("h) Edit Hex, t) Edit Text, /) Search, q) Quit\n");
     printw("</> : next/previous block, l) Load Block, w) Write Block");
     refresh();
     c = getch();
@@ -322,11 +473,16 @@ void BlockEdit()
 	  LoadBlock(); 
 	break;
       case 'w' :
-      case 'W' : BlockWrite(); break;
+      case 'W' : 
+	BlockWrite(); 
+	break;
       case 'q' :
       case 'Q' : 
 	if (AbortChanges())
 	  CONTINUE = FALSE;
+	break;
+      case '/' :
+	findData();
 	break;
       default  : 
       {
